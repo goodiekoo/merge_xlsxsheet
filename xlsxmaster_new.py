@@ -5,6 +5,8 @@ from openpyxl.utils.cell import get_column_letter
 import time
 from copy import copy
 import warnings
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 def check_xlsx_sheets(directory_path):
     print(f"\n=== {directory_path} xlsx Infos ===")
@@ -93,9 +95,40 @@ def copy_sheet_with_styles(src_sheet, dest_sheet):
                 new_cell.protection = copy(cell.protection)
                 new_cell.alignment = copy(cell.alignment)
 
+def process_file(file_path, key_prefix, output_workbook, lock, processed_sheets_count):
+    try:
+        # print(f"Processing: {os.path.basename(file_path)}")
+        src_workbook = load_workbook(file_path, data_only=True)
+        count_sheets = len(src_workbook.sheetnames)
+        # print(f"  - Sheet count: {count_sheets}")
+        
+        for sheet_name in src_workbook.sheetnames:
+            src_sheet = src_workbook[sheet_name]
+            korean_found = False
+            for row in src_sheet.iter_rows():
+                row_values = [str(cell.value).lower() if cell.value is not None else '' for cell in row]
+                # 'Korean' 또는 'korean'이 포함된 셀을 대소문자 구분 없이 찾음
+                if any(cell_val in ["korean", "korean"] for cell_val in row_values):
+                    korean_found = True
+            
+            if korean_found:
+                file_name_no_ext = os.path.splitext(os.path.basename(file_path))[0]
+                
+                new_sheet_name = f"{file_name_no_ext}@{count_sheets}@{sheet_name}"
+                safe_sheet_name = new_sheet_name[:31]
+                
+                with lock:
+                    dest_sheet = output_workbook.create_sheet(title=safe_sheet_name)
+                    copy_sheet_with_styles(src_sheet, dest_sheet)
+                    processed_sheets_count.value += 1
+        
+        src_workbook.close()
+    except Exception as e:
+        print(f"    ERROR: {os.path.basename(file_path)} - {str(e)}")
+
 def process_and_merge_files(file_paths, output_path, key_prefix=""):
     """
-    지정된 파일 목록을 처리하고 유효한 시트를 병합하여 Excel 파일로 저장합니다.
+    지정된 파일 목록을 처리하고 유효한 시트를 병합하여 Excel 파일로 저장합니다. (멀티스레딩 적용)
     """
     folder_name = "Script" if key_prefix else "Ingame"
     if not file_paths:
@@ -108,53 +141,25 @@ def process_and_merge_files(file_paths, output_path, key_prefix=""):
     if 'Sheet' in output_workbook.sheetnames:
         output_workbook.remove(output_workbook['Sheet'])
 
-    total_files = len(file_paths)
-    processed_sheets_count = 0
+    lock = threading.Lock()
+    
+    # Using a mutable object to count processed sheets across threads
+    class Counter:
+        def __init__(self):
+            self.value = 0
 
-    # 경고를 일시적으로 무시
+    processed_sheets_counter = Counter()
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        with ThreadPoolExecutor() as executor:
+            futures = [executor.submit(process_file, file_path, key_prefix, output_workbook, lock, processed_sheets_counter) for file_path in file_paths]
+            for future in futures:
+                future.result() # Wait for all threads to complete
 
-        for i, file_path in enumerate(file_paths, 1):
-            try:
-                print(f"  [{i}/{total_files}] Processing: {os.path.basename(file_path)}")
-                src_workbook = load_workbook(file_path, data_only=True)
-                
-                for sheet_name in src_workbook.sheetnames:
-                    src_sheet = src_workbook[sheet_name]
-                    
-                    # 헤더를 찾기 위한 조건 완화
-                    korean_found = False
-                    utf8_found = False
-                    for row_idx in [2, 3]:
-                        if row_idx <= src_sheet.max_row:
-                            row_values = [str(cell.value).lower() if cell.value is not None else '' for cell in src_sheet[row_idx]]
-                            if "korean" in row_values:
-                                korean_found = True
-                            if "utf-8" in row_values:
-                                utf8_found = True
-                    
-                    if korean_found and utf8_found:
-                        file_name_no_ext = os.path.splitext(os.path.basename(file_path))[0]
-                        
-                        if key_prefix:
-                            new_sheet_name = f"{key_prefix}{file_name_no_ext}_{sheet_name}"
-                        else:
-                            new_sheet_name = f"{file_name_no_ext}@{sheet_name}"
-
-                        safe_sheet_name = new_sheet_name[:31]
-                        
-                        dest_sheet = output_workbook.create_sheet(title=safe_sheet_name)
-                        copy_sheet_with_styles(src_sheet, dest_sheet)
-                        processed_sheets_count += 1
-                
-                src_workbook.close()
-            except Exception as e:
-                print(f"    ERROR: {os.path.basename(file_path)} - {str(e)}")
-
-    if processed_sheets_count > 0:
+    if processed_sheets_counter.value > 0:
         print(f"\n--- Saving merged file: {output_path} ---")
-        print(f"Total {processed_sheets_count} valid sheets will be saved...")
+        print(f"Total {processed_sheets_counter.value} valid sheets will be saved...")
         output_workbook.save(output_path)
         print(f"Merge complete! Saved to {output_path}.")
     else:
@@ -165,7 +170,7 @@ def merge_xlsx_files(ingame_path, script_path, base_output_path):
     """
     In order to merge Excel files from ingame and script folders into separate files.
     """
-    print("\n=== Merging ===")
+    print("\n=== Prepare Merging ===")
 
     ingame_files = []
     if os.path.exists(ingame_path):
@@ -185,16 +190,16 @@ def merge_xlsx_files(ingame_path, script_path, base_output_path):
     print(f"Script folder found files: {len(script_files)}")
 
     timestamp = time.strftime("%m%d")
-    ingame_output_path = os.path.join(base_output_path, f"merged_ingame_{timestamp}.xlsx")
+    ingame_output_path = os.path.join(base_output_path, f"ingame_{timestamp}.xlsx")
     process_and_merge_files(ingame_files, ingame_output_path, key_prefix="")
 
-    script_output_path = os.path.join(base_output_path, f"merged_script_{timestamp}.xlsx")
+    script_output_path = os.path.join(base_output_path, f"script_{timestamp}.xlsx")
     process_and_merge_files(script_files, script_output_path, key_prefix="[script]")
 
 def main():
     start_time = time.time()
 
-    base_path = r"..."
+    base_path = r"...\localization_text"
     ingame_path = os.path.join(base_path, "ingame")
     script_path = os.path.join(base_path, "script")
     # 결과 파일을 'output' 폴더에 저장하도록 변경
