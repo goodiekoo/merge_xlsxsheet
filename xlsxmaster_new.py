@@ -4,6 +4,7 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import get_column_letter
 import time
 from copy import copy
+import warnings
 
 def check_xlsx_sheets(directory_path):
     print(f"\n=== {directory_path} xlsx Infos ===")
@@ -94,7 +95,7 @@ def copy_sheet_with_styles(src_sheet, dest_sheet):
 
 def process_and_merge_files(file_paths, output_path, key_prefix=""):
     """
-    merge specified file paths into a single Excel file, keeping valid sheets.
+    지정된 파일 목록을 처리하고 유효한 시트를 병합하여 Excel 파일로 저장합니다.
     """
     folder_name = "Script" if key_prefix else "Ingame"
     if not file_paths:
@@ -110,39 +111,46 @@ def process_and_merge_files(file_paths, output_path, key_prefix=""):
     total_files = len(file_paths)
     processed_sheets_count = 0
 
-    for i, file_path in enumerate(file_paths, 1):
-        try:
-            print(f"  [{i}/{total_files}] Processing: {os.path.basename(file_path)}")
-            src_workbook = load_workbook(file_path, data_only=True)
-            
-            for sheet_name in src_workbook.sheetnames:
-                src_sheet = src_workbook[sheet_name]
-                
-                header_found = False
-                for row_idx in [2, 3]:
-                    if row_idx <= src_sheet.max_row:
-                        row_values = [cell.value for cell in src_sheet[row_idx]]
-                        if "Korean" in row_values and "utf-8" in row_values:
-                            header_found = True
-                            break
-                
-                if header_found:
-                    file_name_no_ext = os.path.splitext(os.path.basename(file_path))[0]
-                    
-                    if key_prefix:
-                        new_sheet_name = f"{key_prefix}{file_name_no_ext}_{sheet_name}"
-                    else:
-                        new_sheet_name = f"{file_name_no_ext}@{sheet_name}"
+    # 경고를 일시적으로 무시
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
 
-                    safe_sheet_name = new_sheet_name[:31]
+        for i, file_path in enumerate(file_paths, 1):
+            try:
+                print(f"  [{i}/{total_files}] Processing: {os.path.basename(file_path)}")
+                src_workbook = load_workbook(file_path, data_only=True)
+                
+                for sheet_name in src_workbook.sheetnames:
+                    src_sheet = src_workbook[sheet_name]
                     
-                    dest_sheet = output_workbook.create_sheet(title=safe_sheet_name)
-                    copy_sheet_with_styles(src_sheet, dest_sheet)
-                    processed_sheets_count += 1
-            
-            src_workbook.close()
-        except Exception as e:
-            print(f"    ERROR: {os.path.basename(file_path)} - {str(e)}")
+                    # 헤더를 찾기 위한 조건 완화
+                    korean_found = False
+                    utf8_found = False
+                    for row_idx in [2, 3]:
+                        if row_idx <= src_sheet.max_row:
+                            row_values = [str(cell.value).lower() if cell.value is not None else '' for cell in src_sheet[row_idx]]
+                            if "korean" in row_values:
+                                korean_found = True
+                            if "utf-8" in row_values:
+                                utf8_found = True
+                    
+                    if korean_found and utf8_found:
+                        file_name_no_ext = os.path.splitext(os.path.basename(file_path))[0]
+                        
+                        if key_prefix:
+                            new_sheet_name = f"{key_prefix}{file_name_no_ext}_{sheet_name}"
+                        else:
+                            new_sheet_name = f"{file_name_no_ext}@{sheet_name}"
+
+                        safe_sheet_name = new_sheet_name[:31]
+                        
+                        dest_sheet = output_workbook.create_sheet(title=safe_sheet_name)
+                        copy_sheet_with_styles(src_sheet, dest_sheet)
+                        processed_sheets_count += 1
+                
+                src_workbook.close()
+            except Exception as e:
+                print(f"    ERROR: {os.path.basename(file_path)} - {str(e)}")
 
     if processed_sheets_count > 0:
         print(f"\n--- Saving merged file: {output_path} ---")
@@ -185,11 +193,12 @@ def merge_xlsx_files(ingame_path, script_path, base_output_path):
 
 def main():
     start_time = time.time()
-    
+
     base_path = r"..."
     ingame_path = os.path.join(base_path, "ingame")
     script_path = os.path.join(base_path, "script")
-    output_base_path = base_path
+    # 결과 파일을 'output' 폴더에 저장하도록 변경
+    output_base_path = os.path.join(base_path, "output")
     
     print("=== Exceptions ===")
     print(f"Base Dir: {base_path}")
@@ -204,7 +213,6 @@ def main():
 
     # The check_xlsx_sheets calls are not strictly necessary for merging
     # and can be commented out to speed up the process if not needed.
-    # print("\n1. 전체 디렉토리 Excel 파일 시트 정보 확인")
     # check_xlsx_sheets(base_path)
     
     ingame_exists = os.path.exists(ingame_path)
