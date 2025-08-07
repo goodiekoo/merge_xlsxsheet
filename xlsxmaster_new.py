@@ -7,8 +7,9 @@ from copy import copy
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import json
 
-def check_xlsx_sheets(directory_path):
+def check_xlsx_sheets(directory_path, output_path):
     print(f"\n=== {directory_path} xlsx Infos ===")
     
     xlsx_files = []
@@ -19,27 +20,40 @@ def check_xlsx_sheets(directory_path):
     
     if not xlsx_files:
         print("Excel does not exist")
-        return {}
+        return []
     
     print(f"Finds: {len(xlsx_files)}")
-    file_info = {}
+    file_info_list = []
     
     for i, file_path in enumerate(xlsx_files, 1):
         try:
             if len(xlsx_files) > 10 and i % 10 == 0:
                 print(f"  Searching: {i}/{len(xlsx_files)} ...")
             
-            # openpyxl
             workbook = load_workbook(file_path, read_only=True, data_only=True)
             sheet_names = workbook.sheetnames
             sheet_count = len(sheet_names)
             
             file_name = os.path.basename(file_path)
-            file_info[file_name] = {
-                'path': file_path,
-                'sheet_count': sheet_count,
-                'sheet_names': sheet_names
+            
+            # Get relative path
+            root_path = os.path.dirname(os.path.relpath(file_path, directory_path))
+            if root_path and not root_path.startswith('\\'):
+                root_path = '\\' + root_path
+
+            # Get last modified time
+            last_update_time = os.path.getmtime(file_path)
+            last_update_str = time.strftime("%y%m%d_%H:%M", time.localtime(last_update_time))
+
+            file_data = {
+                "xlsxname": file_name,
+                "rootpath": root_path,
+                "index": str(i),
+                "sheetcounts": str(sheet_count),
+                "sheetnames": sheet_names,
+                "lastupdate": last_update_str
             }
+            file_info_list.append(file_data)
 
             if len(xlsx_files) <= 20:
                 print(f"\nFile Name: {file_name}")
@@ -48,7 +62,6 @@ def check_xlsx_sheets(directory_path):
                 
                 for sheet_name in sheet_names:
                     try:
-                        # openpyx
                         worksheet = workbook[sheet_name]
                         max_row = worksheet.max_row if worksheet.max_row else 0
                         max_col = worksheet.max_column if worksheet.max_column else 0
@@ -57,8 +70,7 @@ def check_xlsx_sheets(directory_path):
                     except Exception as e:
                         print(f"  - {sheet_name}: Error! - {str(e)}")
             else:
-                # 파일이 많을 때는 요약 정보만
-                if i <= 5:  # 처음 5개만 자세히 표시
+                if i <= 5:
                     print(f"\nFile: {file_name} (Sheet: {sheet_count}개)")
                 elif i == 6:
                     print(f"\n... (Summary) ...")
@@ -68,8 +80,15 @@ def check_xlsx_sheets(directory_path):
         except Exception as e:
             print(f"File {os.path.basename(file_path)} read error: {str(e)}")
 
-    print(f"\n Result: {len(file_info)} files collected.")
-    return file_info
+    print(f"\n Result: {len(file_info_list)} files collected.")
+    
+    # Save to JSON file
+    json_output_path = os.path.join(output_path, f"xlsx_info_{time.strftime('%m%d')}.json")
+    with open(json_output_path, 'w', encoding='utf-8') as f:
+        json.dump(file_info_list, f, ensure_ascii=False, indent=4)
+    print(f"JSON file created: {json_output_path}")
+
+    return file_info_list
 
 def copy_sheet_with_styles(src_sheet, dest_sheet):
     """
@@ -199,7 +218,7 @@ def merge_xlsx_files(ingame_path, script_path, base_output_path):
 def main():
     start_time = time.time()
 
-    base_path = r"...\localization_text"
+    base_path = r"F:\localization_text"
     ingame_path = os.path.join(base_path, "ingame")
     script_path = os.path.join(base_path, "script")
     # 결과 파일을 'output' 폴더에 저장하도록 변경
@@ -218,7 +237,7 @@ def main():
 
     # The check_xlsx_sheets calls are not strictly necessary for merging
     # and can be commented out to speed up the process if not needed.
-    # check_xlsx_sheets(base_path)
+    check_xlsx_sheets(base_path, output_base_path)
     
     ingame_exists = os.path.exists(ingame_path)
     if not ingame_exists:
@@ -228,10 +247,10 @@ def main():
     if not script_exists:
         print(f"\nWarning: Script folder doesn't exist: {script_path}")
 
-    if ingame_exists or script_exists:
-        merge_xlsx_files(ingame_path, script_path, output_base_path)
-    else:
-        print("\nNo folders found to merge Excel files.")
+    # if ingame_exists or script_exists:
+    #     merge_xlsx_files(ingame_path, script_path, output_base_path)
+    # else:
+    #     print("\nNo folders found to merge Excel files.")
 
     end_time = time.time()
     execution_time = end_time - start_time
